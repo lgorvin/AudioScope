@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audioscope"
+version = "1.0.0"
+description = "Key, BPM and root-note analysis of songs, loops and one-shots for music producers"
+requires-python = ">=3.11"
+dependencies = ["numpy", "scipy", "soundfile>=0.12", "soxr", "librosa>=0.10", "PySide6>=6.6"]
+
+[project.optional-dependencies]
+dev = ["pytest", "pyinstaller"]
+
+[project.scripts]
+audioscope-cli = "audioscope.cli:main"
+
+[project.gui-scripts]
+audioscope = "audioscope.app:main"
+
+[tool.setuptools.packages.find]
+include = ["audioscope*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::UserWarning", "ignore::FutureWarning"]

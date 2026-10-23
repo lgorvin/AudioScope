@@ -1,0 +1,17 @@
+file,category,type,bpm,key,root
+drums_house_124_4bars.wav,loop,drum_loop,124,,
+drums_trap_140_2bars.flac,loop,drum_loop,140,,
+drums_boombap_92_4bars.mp3,loop,drum_loop,92,,
+keys_Am_100_4bars.wav,loop,melodic_loop,100,A minor,
+stabs_Eb_128_4bars.flac,loop,melodic_loop,128,Eb major,
+keys_F#m_90_4bars.mp3,loop,melodic_loop,90,F# minor,
+bass_Gm_100_4bars.wav,loop,bass_loop,100,G minor,
+pad_Cm_no_pulse.flac,loop,melodic_loop,none,C minor,
+vocal_E_phrase.wav,loop,vocal,none,E major,
+oneshot_note_A2.wav,oneshot,one_shot,none,none,A2
+oneshot_note_D4_plus30c.flac,oneshot,one_shot,none,none,D4
+oneshot_808_F1.wav,oneshot,one_shot,none,none,F1
+oneshot_stab_Dm7.mp3,oneshot,one_shot,none,,D
+oneshot_hat.wav,oneshot,one_shot,none,none,none
+song_house_124_Am.mp3,song,full_song,124,A minor,
+song_boombap_92_D.flac,song,full_song,92,D major,
