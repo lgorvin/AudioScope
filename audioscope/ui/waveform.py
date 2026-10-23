@@ -6,6 +6,7 @@ from PySide6.QtCore import QPointF, QRectF, QRunnable, QObject, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
+from ..engine import music
 from ..engine.io import read_native
 from . import theme
 
@@ -63,6 +64,7 @@ class WaveformView(QWidget):
         self.beats: list[float] = []
         self.bar_every = 4
         self.message = "Drop audio files to begin"
+        self.notes: list = []  # NoteEvent-like objects (start, end, midi) drawn as a piano-roll lane
         self._cache_w = -1
         self._cols: tuple[np.ndarray, np.ndarray] | None = None
 
@@ -77,6 +79,11 @@ class WaveformView(QWidget):
     def set_grid(self, beats: list[float], bar_every: int = 4):
         self.beats = beats
         self.bar_every = bar_every
+        self.update()
+
+    def set_notes(self, notes: list, namer=None):
+        self.notes = list(notes or [])
+        self.note_namer = namer or (lambda m: music.midi_to_name(m))
         self.update()
 
     def set_position(self, sec: float):
@@ -172,8 +179,10 @@ class WaveformView(QWidget):
                 y2 = y1 + 1
             p.drawLine(QPointF(x + 0.5, y1), QPointF(x + 0.5, y2))
 
-        # hover line + time
         p.setRenderHint(QPainter.Antialiasing, True)
+        self._draw_notes(p, r)
+
+        # hover line + time
         if self.hover_x is not None:
             p.setPen(QPen(QColor(255, 255, 255, 70), 1))
             p.drawLine(QPointF(self.hover_x, r.top()), QPointF(self.hover_x, r.bottom()))
@@ -189,6 +198,29 @@ class WaveformView(QWidget):
 
         self._draw_ruler(p, r)
         p.end()
+
+    def _draw_notes(self, p: QPainter, r: QRectF):
+        """Bass notes as a piano-roll lane over the lower part of the waveform."""
+        if not self.notes:
+            return
+        lo = min(n.midi for n in self.notes) - 1
+        hi = max(n.midi for n in self.notes) + 1
+        lane = QRectF(r.left(), r.top() + r.height() * 0.52, r.width(), r.height() * 0.44)
+        p.fillRect(lane, QColor(15, 17, 20, 150))
+        row_h = lane.height() / max(hi - lo + 1, 1)
+        bar_h = max(3.0, min(row_h * 0.9, 14.0))
+        p.setFont(QFont("Segoe UI", 7))
+        for n in self.notes:
+            x0, x1 = self._sec_to_x(n.start), self._sec_to_x(n.end)
+            y = lane.bottom() - (n.midi - lo + 0.5) * row_h - bar_h / 2
+            rect = QRectF(x0, y, max(2.0, x1 - x0 - 1), bar_h)
+            alpha = 120 + int(135 * min(1.0, n.velocity / 127))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 138, 61, alpha))
+            p.drawRoundedRect(rect, 2, 2)
+            if rect.width() > 26 and bar_h >= 9:
+                p.setPen(QColor("#1A0E06"))
+                p.drawText(rect.adjusted(3, 0, 0, 0), Qt.AlignVCenter | Qt.AlignLeft, self.note_namer(n.midi))
 
     def _draw_ruler(self, p: QPainter, r: QRectF):
         dur = self.peaks.duration

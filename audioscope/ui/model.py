@@ -9,6 +9,7 @@ from PySide6.QtCore import QAbstractTableModel, QModelIndex, QStandardPaths, Qt
 from PySide6.QtGui import QColor
 
 from ..engine import music
+from ..engine.transcribe import BassTranscription
 from ..engine.types import AnalysisResult, format_bpm
 from . import theme
 
@@ -42,6 +43,8 @@ class Entry:
     result: AnalysisResult | None = None
     error: str = ""
     correction: Correction = field(default_factory=Correction)
+    bass: BassTranscription | None = None  # on-demand bass transcription
+    bass_error: str = ""
 
     @property
     def name(self) -> str:

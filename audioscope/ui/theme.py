@@ -74,6 +74,12 @@ QSlider::groove:horizontal {{ height: 4px; background: {BORDER}; border-radius: 
 QSlider::sub-page:horizontal {{ background: {ACCENT}; border-radius: 2px; }}
 QSlider::handle:horizontal {{ background: {TEXT}; width: 12px; height: 12px; margin: -4px 0; border-radius: 6px; }}
 QSplitter::handle {{ background: {BG}; }}
+QCheckBox {{ spacing: 7px; }}
+QCheckBox::indicator {{ width: 15px; height: 15px; border: 1px solid {FAINT}; border-radius: 4px; background: {RAISED_HI}; }}
+QCheckBox::indicator:hover {{ border-color: {ACCENT}; }}
+QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; }}
+QCheckBox::indicator:disabled {{ border-color: {BORDER}; background: {RAISED}; }}
+QCheckBox:disabled {{ color: {FAINT}; }}
 QStatusBar {{ background: {PANEL}; color: {MUTED}; border-top: 1px solid {BORDER}; }}
 QScrollArea {{ background: transparent; border: none; }}
 QMenu {{ background: {RAISED}; border: 1px solid {BORDER}; }}

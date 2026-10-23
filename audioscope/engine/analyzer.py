@@ -30,6 +30,7 @@ from .io import AudioData, load_audio
 from .key import estimate_key
 from .pitch import estimate_pitch
 from .tempo import estimate_tempo
+from .transcribe import BassTranscription, transcribe_bass
 from .types import AnalysisResult, AudioType, Classification, KeyResult, Reliability
 
 ENGINE_VERSION = "1.0.0"
@@ -71,6 +72,12 @@ def analyze_file(path: str, audio_type: AudioType | None = None, progress: Progr
         progress("Decoding")
     audio = load_audio(path)
     return analyze_audio(audio, audio_type=audio_type, progress=progress)
+
+
+def transcribe_file(path: str, audio_type: AudioType | None = None) -> BassTranscription:
+    """Bass-line notes of a file (pass the analysed audio type for the right extraction mode)."""
+    audio = load_audio(path)
+    return transcribe_bass(Features(audio.y, audio.sr), audio_type)
 
 
 def analyze_audio(audio: AudioData, audio_type: AudioType | None = None, progress: Progress | None = None) -> AnalysisResult:

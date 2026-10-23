@@ -252,3 +252,45 @@ class EvidenceList(QLabel):
 
 def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+class FileDragChip(QLabel):
+    """A chip the user drags out of the app (e.g. into FL Studio's playlist or piano roll).
+
+    ``provider`` is called when the drag starts and returns the path of the file to drag
+    (or None); the file is handed over as a regular file drop.
+    """
+
+    def __init__(self, text: str, provider, parent=None):
+        super().__init__(text, parent)
+        self.provider = provider
+        self._press = None
+        self.setCursor(Qt.OpenHandCursor)
+        self.setToolTip("Drag into FL Studio (playlist, channel rack or piano roll) or any folder")
+        self.setStyleSheet(f"QLabel {{ background: {theme.RAISED_HI}; border: 1px dashed {theme.FAINT}; border-radius: 7px;"
+                           f" padding: 5px 10px; }} QLabel:hover {{ border-color: {theme.ACCENT}; }}"
+                           f" QLabel:disabled {{ color: {theme.FAINT}; }}")
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self._press = ev.position().toPoint()
+
+    def mouseMoveEvent(self, ev):
+        from PySide6.QtCore import QMimeData, QUrl
+        from PySide6.QtGui import QDrag
+        from PySide6.QtWidgets import QApplication
+
+        if self._press is None or not (ev.buttons() & Qt.LeftButton):
+            return
+        if (ev.position().toPoint() - self._press).manhattanLength() < QApplication.startDragDistance():
+            return
+        self._press = None
+        path = self.provider()
+        if not path:
+            return
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(path)])
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.setPixmap(self.grab())
+        drag.exec(Qt.CopyAction)

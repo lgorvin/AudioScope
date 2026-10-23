@@ -20,6 +20,16 @@ def _analyze_in_worker(path: str, audio_type: str | None) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+def _transcribe_in_worker(path: str, audio_type: str | None) -> dict:
+    """Bass transcription in a worker process."""
+    try:
+        from ..engine import AudioType, transcribe_file
+
+        return {"ok": True, "result": transcribe_file(path, AudioType(audio_type) if audio_type else None).to_dict()}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 def default_workers() -> int:
     return max(1, min(4, (os.cpu_count() or 2) - 1))
 
@@ -28,7 +38,10 @@ class AnalysisManager(QObject):
     started = Signal(str)
     finished = Signal(str, dict)  # path, result dict
     failed = Signal(str, str)
+    bassFinished = Signal(str, dict)  # path, BassTranscription dict
+    bassFailed = Signal(str, str)
     _done = Signal(str, dict)  # marshals results from executor threads onto the GUI thread
+    _bass_done = Signal(str, dict)
 
     def __init__(self, workers: int | None = None, parent=None):
         super().__init__(parent)
@@ -37,6 +50,8 @@ class AnalysisManager(QObject):
         self._queue: deque[tuple[str, str | None]] = deque()
         self._running: dict[str, Future] = {}
         self._done.connect(self._on_done)
+        self._bass_done.connect(self._on_bass_done)
+        self._bass_running: set[str] = set()
 
     def _ensure_pool(self):
         if self._pool is None:
@@ -49,7 +64,26 @@ class AnalysisManager(QObject):
         self._pump()
 
     def pending(self) -> int:
-        return len(self._queue) + len(self._running)
+        return len(self._queue) + len(self._running) + len(self._bass_running)
+
+    def submit_bass(self, path: str, audio_type: str | None):
+        """Bass transcription is on demand, so it skips the analysis queue."""
+        if path in self._bass_running:
+            return
+        self._ensure_pool()
+        self._bass_running.add(path)
+        fut = self._pool.submit(_transcribe_in_worker, path, audio_type)
+        fut.add_done_callback(lambda f, p=path: self._bass_done.emit(p, self._safe_result(f)))
+
+    def bass_running(self, path: str) -> bool:
+        return path in self._bass_running
+
+    def _on_bass_done(self, path: str, payload: dict):
+        self._bass_running.discard(path)
+        if payload.get("ok"):
+            self.bassFinished.emit(path, payload["result"])
+        else:
+            self.bassFailed.emit(path, payload.get("error", "unknown error"))
 
     def cancel_pending(self):
         self._queue.clear()

@@ -198,8 +198,10 @@ def chord_loop(bpm, tonic, mode, bars=4, sr=SR, harmonics=6, with_bass=True, rhy
     return _norm(buf)
 
 
-def bass_loop(bpm, tonic, mode, bars=4, sr=SR, seed=0, variant=0):
+def bass_loop(bpm, tonic, mode, bars=4, sr=SR, seed=0, variant=0, return_notes=False):
+    """Monophonic 8th-note bass line. With return_notes, also returns [(start_s, dur_s, midi)]."""
     rng = np.random.default_rng(seed)
+    notes = []
     n = loop_len(bpm, bars, sr)
     buf = np.zeros(n)
     beat = 60.0 / bpm
@@ -215,7 +217,31 @@ def bass_loop(bpm, tonic, mode, bars=4, sr=SR, seed=0, variant=0):
                     m = 36 + tonic % 12
                 x = tone(m, 0.48 * beat, sr, harmonics=5, attack=0.005, release=0.03) * 0.6
                 _place(buf, x, int(round((bar * 4 + e * 0.5) * beat * sr)) % n)
-    return _norm(buf)
+                notes.append(((bar * 4 + e * 0.5) * beat, 0.48 * beat, int(m)))
+    return (_norm(buf), notes) if return_notes else _norm(buf)
+
+
+def bass_line(bpm, notes, bars=None, sr=SR, style="synth"):
+    """Render [(start_beat, length_beats, midi)] as a synth bass or 808 (with pitch drop).
+
+    Returns (audio, [(start_s, dur_s, midi)]).
+    """
+    beat = 60.0 / bpm
+    total_beats = bars * 4 if bars else max(s + l for s, l, _ in notes)
+    n = int(round(total_beats * beat * sr))
+    buf = np.zeros(n)
+    truth = []
+    for start, length, m in notes:
+        dur = length * beat
+        if style == "808":
+            x = eight08(m, dur=dur, sr=sr, glide_semitones=7, glide_time=0.03)
+            fade = min(len(x), int(0.01 * sr))
+            x[-fade:] *= np.linspace(1, 0, fade)
+        else:
+            x = tone(m, dur, sr, harmonics=5, attack=0.004, release=0.02) * 0.6
+        _place(buf, x, int(round(start * beat * sr)), wrap=False)
+        truth.append((start * beat, dur, int(m)))
+    return _norm(buf), truth
 
 
 def pad_loop(tonic, mode, seconds=8.0, sr=SR):

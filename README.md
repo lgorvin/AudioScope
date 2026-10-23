@@ -22,6 +22,9 @@ suited to that kind of audio, and tells you **how much to trust each result** �
 * Reliability per result (High / Medium / Low / N/A) derived from measured evidence, plus
   a plain-language "why these results" panel; no invented percentages
 * Interactive waveform with beat/bar grid, click-to-seek, play/stop/loop, volume
+* **Bass → MIDI**: transcribe the bass line, 808 or tuned kick of any file into notes
+  (shown on the waveform), optionally quantized to 1/16 at the file's BPM, then export a
+  `.mid` file or drag it straight into FL Studio; batch export for a whole folder
 * Manual correction (BPM with ½× / 2× / tap tempo, key, type) remembered between sessions
 * Export CSV or full-detail JSON; copy result to clipboard
 * Command-line tool for scripting
@@ -39,6 +42,7 @@ python -m venv .venv
 .venv\Scripts\pip install -r requirements-dev.txt
 .venv\Scripts\python -m audioscope              # GUI
 .venv\Scripts\python -m audioscope.cli loops\   # CLI (add --json for full output)
+.venv\Scripts\python -m audioscope.cli loops\ --bass-midi out\ --quantize   # + bass lines as .mid
 ```
 
 ### Build the Windows package
@@ -72,6 +76,19 @@ Key points:
   pitch content that fits no major/minor key.
 * **Filename tags** like `128bpm_F#min` are shown for comparison but never used as results.
 
+### Bass → MIDI
+pYIN pitch tracking on the low-passed signal (the harmonic part for mixes), corrected for
+the file's own tuning. Notes start at loudness re-attacks (≥ 5 dB) or at a new steady pitch
+(legato); pitch drops, slides and scoops are folded into the note they lead into, and short
+808 notes that never settle are extrapolated to their target pitch. Velocity follows the
+attack level. Exported as a type-0 MIDI file with the detected tempo (120 BPM if none), so
+it lines up with the DAW grid. MIDI note 60 is written as middle C (FL Studio shows C5).
+
+On synthetic lines: plain and legato bass, detuned bass and 808 one-shots are transcribed
+note-for-note (F1 = 1.0, onsets within 50 ms); bass under a chord mix F1 ≈ 0.95; a fast
+808 pattern with deep pitch drops F1 ≈ 0.77. In drum loops the "bass" is usually the kick
+or 808, and from full mixes notes should be checked by ear (reliability is capped at Medium).
+
 ### Reliability
 Not a probability. Derived from measurable evidence:
 
@@ -103,6 +120,8 @@ audioscope/
     tempo.py         BPM
     key.py           key + Camelot
     pitch.py         root note / chords / dominant pitches
+    transcribe.py    bass-line notes (for MIDI)
+    midi.py          Standard MIDI File writer
     classify.py      audio type
     analyzer.py      per-type strategy, filename hints
     types.py         JSON-serialisable result dataclasses
@@ -121,6 +140,10 @@ r.tempo.bpm, r.tempo.reliability, r.tempo.candidates
 r.key.key.name, r.key.key.camelot, r.key.candidates
 r.pitch.root_name, r.pitch.root_cents, r.pitch.chord
 r.to_dict()                                     # JSON-ready
+
+from audioscope.engine import transcribe_file, quantize, write_midi
+bass = transcribe_file("bass.wav", r.classification.audio_type)
+write_midi("bass.mid", quantize(bass.notes, r.tempo.bpm), r.tempo.bpm)
 ```
 The engine works on mono float32 at 22.05 kHz (`analyze_audio(AudioData)`), so a plugin
 host can feed it captured buffers instead of files.
@@ -128,7 +151,7 @@ host can feed it captured buffers instead of files.
 ## Tests
 
 ```powershell
-.venv\Scripts\python -m pytest            # ~165 tests, ~1.5 min
+.venv\Scripts\python -m pytest            # ~180 tests, ~1.5 min
 .venv\Scripts\python tests\make_fixtures.py   # regenerate reference fixtures
 ```
 

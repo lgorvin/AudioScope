@@ -4,18 +4,21 @@ from __future__ import annotations
 import csv
 import json
 import os
+import tempfile
 import time
 from collections import OrderedDict
 
 from PySide6.QtCore import QSortFilterProxyModel, Qt, QThreadPool, QTimer
 from PySide6.QtGui import QAction, QGuiApplication, QKeySequence, QShortcut
-from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFrame, QGridLayout,
                                QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMenu, QMessageBox,
                                QPushButton, QScrollArea, QSlider, QSplitter, QStackedWidget, QTableView,
                                QVBoxLayout, QWidget)
 
 from ..engine import ENGINE_VERSION, music
 from ..engine.io import SUPPORTED_EXTENSIONS
+from ..engine.midi import notes_to_midi
+from ..engine.transcribe import BassTranscription, quantize
 from ..engine.types import AnalysisResult, AudioType, Reliability, format_bpm
 from . import icons, theme
 from .jobs import AnalysisManager
@@ -23,7 +26,8 @@ from .model import (COLUMNS, STATUS_DONE, STATUS_ERROR, STATUS_QUEUED, STATUS_RU
                     CorrectionStore, Entry)
 from .player import Player
 from .waveform import PeakJob, WaveformView, fmt_time
-from .widgets import AlternativesList, DropArea, DropHint, EvidenceList, ResultCard, collect_audio_paths
+from .widgets import (AlternativesList, DropArea, DropHint, EvidenceList, FileDragChip, ReliabilityBadge, ResultCard,
+                      collect_audio_paths)
 
 KEY_CHOICES = [(pc, mode) for mode in (music.MINOR, music.MAJOR) for pc in range(12)]
 
@@ -47,6 +51,11 @@ class MainWindow(QMainWindow):
         self.manager.started.connect(self._on_started)
         self.manager.finished.connect(self._on_finished)
         self.manager.failed.connect(self._on_failed)
+        self.manager.bassFinished.connect(self._on_bass_finished)
+        self.manager.bassFailed.connect(self._on_bass_failed)
+        self._bass_export_dir: str | None = None
+        self._bass_export_pending: set[str] = set()
+        self._bass_export_written = 0
         self.player = Player(self)
         self.player.positionChanged.connect(self._on_position)
         self.player.playingChanged.connect(self._on_playing)
@@ -111,6 +120,8 @@ class MainWindow(QMainWindow):
         menu = QMenu(export)
         menu.addAction("Export CSV…", lambda: self.export("csv"))
         menu.addAction("Export JSON (full detail)…", lambda: self.export("json"))
+        menu.addSeparator()
+        menu.addAction("Bass lines to MIDI (all files)…", self.export_bass_batch)
         export.setMenu(menu)
         clear = QPushButton("Clear")
         clear.clicked.connect(self.clear_all)
@@ -272,6 +283,7 @@ class MainWindow(QMainWindow):
         right = QVBoxLayout()
         right.setSpacing(10)
         right.addWidget(self._build_corrections())
+        right.addWidget(self._build_bass_panel())
         ev_panel = QFrame()
         ev_panel.setObjectName("panel")
         evl = QVBoxLayout(ev_panel)
@@ -354,6 +366,46 @@ class MainWindow(QMainWindow):
         g.addWidget(self.reset_btn, 3, 3)
         g.setColumnStretch(1, 1)
         self.corr_panel = panel
+        return panel
+
+    def _build_bass_panel(self):
+        panel = QFrame()
+        panel.setObjectName("panel")
+        v = QVBoxLayout(panel)
+        v.setContentsMargins(14, 12, 14, 12)
+        v.setSpacing(8)
+        head = QHBoxLayout()
+        title = QLabel("BASS → MIDI")
+        title.setObjectName("sectionTitle")
+        head.addWidget(title)
+        head.addStretch()
+        self.bass_badge = ReliabilityBadge()
+        head.addWidget(self.bass_badge)
+        v.addLayout(head)
+        self.bass_summary = QLabel()
+        self.bass_summary.setObjectName("muted")
+        self.bass_summary.setWordWrap(True)
+        self.bass_summary.setTextFormat(Qt.RichText)
+        v.addWidget(self.bass_summary)
+        row = QHBoxLayout()
+        self.bass_btn = QPushButton("Detect bass notes")
+        self.bass_btn.setToolTip("Transcribe the bass line (or 808 / tuned kick) into notes")
+        self.bass_btn.clicked.connect(self._detect_bass)
+        row.addWidget(self.bass_btn)
+        self.quant_chk = QCheckBox("Quantize to 1/16")
+        self.quant_chk.setToolTip("Snap note starts and ends to 16th notes at the file's BPM when exporting")
+        row.addWidget(self.quant_chk)
+        row.addStretch()
+        v.addLayout(row)
+        row2 = QHBoxLayout()
+        self.midi_btn = QPushButton("Export MIDI…")
+        self.midi_btn.clicked.connect(self._export_midi)
+        row2.addWidget(self.midi_btn)
+        self.drag_chip = FileDragChip("⠿  Drag MIDI into FL Studio", self._midi_temp_file)
+        row2.addWidget(self.drag_chip)
+        row2.addStretch()
+        v.addLayout(row2)
+        self.bass_panel = panel
         return panel
 
     # =================================================================== files
@@ -539,6 +591,7 @@ class MainWindow(QMainWindow):
             self.alt_pitch.set_rows([])
             self.evidence.set_sections([])
             self._set_detail_enabled(False)
+            self._fill_bass(None)
             return
         self.file_title.setText(e.name)
         self.play_btn.setEnabled(True)
@@ -556,6 +609,7 @@ class MainWindow(QMainWindow):
             self.evidence.set_sections([("Error", [e.error])] if e.error else [])
             self.corr_panel.setEnabled(False)
             self.copy_btn.setEnabled(False)
+            self._fill_bass(None)
             return
         self._set_detail_enabled(True)
         ch = "mono" if r.channels == 1 else "stereo" if r.channels == 2 else f"{r.channels} ch"
@@ -566,6 +620,7 @@ class MainWindow(QMainWindow):
         self._fill_alternatives(r)
         self._fill_evidence(r)
         self._fill_corrections(e, r)
+        self._fill_bass(e)
         self._update_grid(e)
 
     def _fill_cards(self, e: Entry, r: AnalysisResult):
@@ -758,6 +813,7 @@ class MainWindow(QMainWindow):
             return
         e.correction.audio_type = self.type_combo.currentData()
         self.store.put(e.path, e.correction)
+        e.bass = None  # extraction mode depends on the type
         e.status = STATUS_QUEUED
         self.model.touch(e.path)
         self.manager.submit(e.path, e.correction.audio_type)
@@ -772,10 +828,158 @@ class MainWindow(QMainWindow):
         e.correction = Correction()
         self.store.put(e.path, e.correction)
         if retype:
+            e.bass = None
             e.status = STATUS_QUEUED
             self.manager.submit(e.path, None)
         self.model.touch(e.path)
         self._show_entry(e)
+
+    # =================================================================== bass -> MIDI
+    def _detect_bass(self):
+        e = self._entry()
+        if not e or not e.result:
+            return
+        e.bass_error = ""
+        self.manager.submit_bass(e.path, e.result.classification.audio_type.value)
+        self._fill_bass(e)
+        self._update_status()
+
+    def _on_bass_finished(self, path, d):
+        e = self.model.entry(path)
+        if not e:
+            return
+        e.bass = BassTranscription.from_dict(d)
+        e.bass_error = ""
+        if path == self.current:
+            self._fill_bass(e)
+        self._update_status()
+        self._continue_bass_export(e)  # after the status update, so its message stays visible
+
+    def _on_bass_failed(self, path, err):
+        e = self.model.entry(path)
+        if not e:
+            return
+        e.bass, e.bass_error = None, err
+        if path == self.current:
+            self._fill_bass(e)
+        self._update_status()
+        self._continue_bass_export(e)  # after the status update, so its message stays visible
+
+    def _fill_bass(self, e: Entry | None):
+        running = bool(e) and self.manager.bass_running(e.path)
+        has_notes = bool(e and e.bass and e.bass.notes)
+        self.bass_btn.setEnabled(bool(e and e.result) and not running)
+        self.bass_btn.setText("Detecting…" if running else "Detect again" if e and e.bass else "Detect bass notes")
+        self.midi_btn.setEnabled(has_notes)
+        self.drag_chip.setEnabled(has_notes)
+        bpm = e.bpm() if e and e.result else None
+        self.quant_chk.setEnabled(bool(bpm))
+        self.quant_chk.setText(f"Quantize to 1/16 at {format_bpm(bpm)} BPM" if bpm else "Quantize (needs a BPM)")
+        self.bass_badge.set_reliability(e.bass.reliability if e and e.bass else None)
+        if e is None or e.result is None:
+            self.bass_summary.setText("Find the notes of the bass line and bounce them to MIDI.")
+        elif e.bass_error:
+            self.bass_summary.setText(f"Transcription failed: {e.bass_error}")
+        elif running:
+            self.bass_summary.setText("Tracking the bass line…")
+        elif e.bass is None:
+            self.bass_summary.setText("Find the notes of the bass line and bounce them to MIDI.")
+        elif not has_notes:
+            self.bass_summary.setText(e.bass.evidence[-1] if e.bass.evidence else "No bass notes found.")
+        else:
+            b = e.bass
+            name = self._note_namer(e)
+            names = " ".join(name(n.midi) for n in b.notes[:24]) + (" …" if len(b.notes) > 24 else "")
+            lo, hi = min(n.midi for n in b.notes), max(n.midi for n in b.notes)
+            span = name(lo) if lo == hi else f"{name(lo)}–{name(hi)}"
+            tuning = f" · tuned {b.tuning_cents:+.0f}¢" if abs(b.tuning_cents) >= 10 else ""
+            caveat = "" if b.reliability == Reliability.HIGH else \
+                f"<br><span style='color:{theme.FAINT}'>{b.evidence[0]}</span>"
+            self.bass_summary.setText(
+                f"<span style='color:{theme.TEXT}'><b>{len(b.notes)} note{'s' if len(b.notes) != 1 else ''}</b>"
+                f" · {span}{tuning}</span><br>{names}{caveat}")
+        self.wave.set_notes(e.bass.notes if has_notes else [], self._note_namer(e) if has_notes else None)
+
+    @staticmethod
+    def _note_namer(e: Entry):
+        """Note-name function spelled for the entry's key (Eb in G minor, D# in E major)."""
+        k = e.key()
+        flats = music.key_uses_flats(*k) if k else False
+        return lambda m: music.midi_to_name(m, flats)
+
+    def _bass_midi(self, e: Entry) -> tuple[bytes, str]:
+        """MIDI bytes and a file name for the entry's bass line (quantized if requested)."""
+        bpm = e.bpm()
+        notes = quantize(e.bass.notes, bpm) if self.quant_chk.isChecked() and bpm else e.bass.notes
+        stem = os.path.splitext(e.name)[0]
+        return notes_to_midi(notes, bpm, track_name=f"{stem} bass"), f"{stem}_bass.mid"
+
+    def _export_midi(self):
+        e = self._entry()
+        if not e or not e.bass or not e.bass.notes:
+            return
+        data, name = self._bass_midi(e)
+        path, _ = QFileDialog.getSaveFileName(self, "Export bass MIDI", os.path.join(os.path.dirname(e.path), name),
+                                              "MIDI (*.mid)")
+        if not path:
+            return
+        try:
+            with open(path, "wb") as f:
+                f.write(data)
+            self.statusBar().showMessage(f"Saved {path}", 5000)
+        except OSError as err:
+            QMessageBox.warning(self, "Export failed", str(err))
+
+    def _midi_temp_file(self) -> str | None:
+        e = self._entry()
+        if not e or not e.bass or not e.bass.notes:
+            return None
+        data, name = self._bass_midi(e)
+        folder = os.path.join(tempfile.gettempdir(), "AudioScope", "midi")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, "wb") as f:
+            f.write(data)
+        return path
+
+    def export_bass_batch(self):
+        entries = [e for e in self.model.entries if e.result]
+        if not entries:
+            QMessageBox.information(self, "AudioScope", "Nothing analysed yet.")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Folder for bass MIDI files")
+        if not folder:
+            return
+        self._bass_export_dir, self._bass_export_pending, self._bass_export_written = folder, set(), 0
+        for e in entries:
+            if e.bass is not None:
+                self._write_bass_file(e)
+            else:
+                self._bass_export_pending.add(e.path)
+                self.manager.submit_bass(e.path, e.result.classification.audio_type.value)
+        self._report_bass_export()
+
+    def _continue_bass_export(self, e: Entry):
+        if e.path in self._bass_export_pending:
+            self._bass_export_pending.discard(e.path)
+            self._write_bass_file(e)
+            self._report_bass_export()
+
+    def _write_bass_file(self, e: Entry):
+        if not self._bass_export_dir or not e.bass or not e.bass.notes:
+            return
+        data, name = self._bass_midi(e)
+        try:
+            with open(os.path.join(self._bass_export_dir, name), "wb") as f:
+                f.write(data)
+            self._bass_export_written += 1
+        except OSError as err:
+            self.statusBar().showMessage(f"Could not write {name}: {err}", 5000)
+
+    def _report_bass_export(self):
+        left = len(self._bass_export_pending)
+        msg = f"Bass MIDI: {self._bass_export_written} file(s) written to {self._bass_export_dir}"
+        self.statusBar().showMessage(msg + (f" · {left} still transcribing" if left else ""), 8000)
 
     # =================================================================== playback
     def _on_position(self, sec):
